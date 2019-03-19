@@ -148,8 +148,22 @@ FilePoller::FileModificationData FilePoller::getFileModData(
   struct stat info;
   int ret = stat(path.c_str(), &info);
   if (ret != 0) {
-    return FileModificationData{false, 0};
+    return FileModificationData{false, std::chrono::system_clock::time_point()};
   }
-  return FileModificationData{true, info.st_mtime};
+
+  auto& mtim =
+#if defined(__APPLE__) || defined(__FreeBSD__) \
+ || (defined(__NetBSD__) && (__NetBSD_Version__ < 6099000000))
+      info.st_mtimespec
+#else
+      info.st_mtim
+#endif
+      ;
+
+  auto system_time = std::chrono::system_clock::from_time_t(mtim.tv_sec) +
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                         std::chrono::nanoseconds(mtim.tv_nsec));
+
+  return FileModificationData{true, system_time};
 }
 }

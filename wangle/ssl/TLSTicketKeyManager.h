@@ -60,7 +60,7 @@ class SSLStats;
  * a 1:1 relationship with the SSLContext provided.
  *
  */
-class TLSTicketKeyManager : private boost::noncopyable {
+class TLSTicketKeyManager {
  public:
   explicit TLSTicketKeyManager(
       folly::SSLContext* ctx,
@@ -112,6 +112,9 @@ class TLSTicketKeyManager : private boost::noncopyable {
   Unsafe unsafe() { return Unsafe{this}; }
 
  private:
+  TLSTicketKeyManager(const TLSTicketKeyManager&) = delete;
+  TLSTicketKeyManager& operator=(const TLSTicketKeyManager&) = delete;
+
   enum TLSTicketSeedType {
     SEED_OLD = 0,
     SEED_CURRENT,

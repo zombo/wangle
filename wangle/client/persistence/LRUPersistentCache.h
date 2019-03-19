@@ -22,9 +22,9 @@
 #include <map>
 #include <thread>
 
-#include <boost/noncopyable.hpp>
 #include <folly/Executor.h>
 #include <folly/dynamic.h>
+#include <folly/synchronization/SaturatingSemaphore.h>
 #include <wangle/client/persistence/LRUInMemoryCache.h>
 #include <wangle/client/persistence/PersistentCache.h>
 #include <wangle/client/persistence/PersistentCacheCommon.h>
@@ -38,8 +38,6 @@ namespace wangle {
 template<typename K, typename V>
 class CachePersistence {
  public:
-  CachePersistence() : persistedVersion_(0) {}
-
   virtual ~CachePersistence() = default;
 
   /**
@@ -88,16 +86,8 @@ class CachePersistence {
   virtual void clear() = 0;
 
  private:
-  CacheDataVersion persistedVersion_;
+  CacheDataVersion persistedVersion_{kDefaultInitCacheDataVersion};
 };
-
-namespace client {
-namespace persistence {
-constexpr std::chrono::milliseconds DEFAULT_CACHE_SYNC_INTERVAL =
-    std::chrono::milliseconds(5000);
-constexpr int DEFAULT_CACHE_SYNC_RETRIES = 3;
-} // namespace persistence
-} // namespace client
 
 /**
  * A PersistentCache implementation that used a CachePersistence for
@@ -118,22 +108,12 @@ constexpr int DEFAULT_CACHE_SYNC_RETRIES = 3;
 template <typename K, typename V, typename MutexT = std::mutex>
 class LRUPersistentCache
     : public PersistentCache<K, V>,
-      public std::enable_shared_from_this<LRUPersistentCache<K, V, MutexT>>,
-      private boost::noncopyable {
+      public std::enable_shared_from_this<LRUPersistentCache<K, V, MutexT>> {
  public:
   using Ptr = std::shared_ptr<LRUPersistentCache<K, V, MutexT>>;
 
   /**
    * LRUPersistentCache constructor
-   * @param cacheCapacity max number of elements to hold in the cache.
-   * @param syncInterval how often to sync to the persistence (in ms).
-   * @param nSyncRetries how many times to retry to sync on failure.
-   *
-   * Loads the cache and starts of the syncer thread that periodically
-   * syncs the cache to persistence.
-   *
-   * If persistence is specified, the cache is initially loaded with the
-   * contents from it. If load fails, then cache starts empty.
    *
    * On write failures, the sync will happen again up to nSyncRetries times.
    * Once failed nSyncRetries amount of time, then it will give up and not
@@ -142,18 +122,8 @@ class LRUPersistentCache
    * On reaching capacity limit, LRU items are evicted.
    */
   explicit LRUPersistentCache(
-      std::size_t cacheCapacity,
-      std::chrono::milliseconds syncInterval =
-          client::persistence::DEFAULT_CACHE_SYNC_INTERVAL,
-      int nSyncRetries = client::persistence::DEFAULT_CACHE_SYNC_RETRIES,
+      PersistentCacheConfig config,
       std::unique_ptr<CachePersistence<K, V>> persistence = nullptr);
-
-  LRUPersistentCache(
-    std::shared_ptr<folly::Executor> executor,
-    std::size_t cacheCapacity,
-    std::chrono::milliseconds syncInterval,
-    int nSyncRetries,
-    std::unique_ptr<CachePersistence<K, V>> persistence);
 
   /**
    * LRUPersistentCache Destructor
@@ -164,6 +134,16 @@ class LRUPersistentCache
   ~LRUPersistentCache() override;
 
   /**
+   * Loads the cache inline on the calling thread, and starts of the syncer
+   * thread that periodically syncs the cache to persistence if the cache is
+   * running thread mode.
+   *
+   * If persistence is specified from constructor, the cache is initially loaded
+   * with the contents from it. If load fails, then cache starts empty.
+   */
+  void init();
+
+  /**
    * Check if there are updates that need to be synced to persistence
    */
   bool hasPendingUpdates();
@@ -172,17 +152,17 @@ class LRUPersistentCache
    * PersistentCache operations
    */
   folly::Optional<V> get(const K& key) override {
-    return cache_.get(key);
+    return blockingAccessInMemCache().get(key);
   }
 
   void put(const K& key, const V& val) override;
 
   bool remove(const K& key) override {
-    return cache_.remove(key);
+    return blockingAccessInMemCache().remove(key);
   }
 
   void clear(bool clearPersistence = false) override {
-    cache_.clear();
+    blockingAccessInMemCache().clear();
     if (clearPersistence) {
       auto persistence = getPersistence();
       if (persistence) {
@@ -192,29 +172,18 @@ class LRUPersistentCache
   }
 
   size_t size() override {
-    return cache_.size();
+    return blockingAccessInMemCache().size();
   }
-
-  void setSyncOnDestroy(bool syncOnDestroy) {
-    syncOnDestroy_ = syncOnDestroy;
-  }
-
-  /**
-   * Set a new persistence layer on this cache.  This call blocks while the
-   * new persistence layer is loaded into the cache.  The load is also
-   * done under a lock so multiple calls to this will not stomp on each
-   * other.
-   */
-  void setPersistence(std::unique_ptr<CachePersistence<K, V>> persistence);
 
  private:
+  LRUPersistentCache(const LRUPersistentCache&) = delete;
+  LRUPersistentCache& operator=(const LRUPersistentCache&) = delete;
+
   /**
    * Helper to set persistence that will load the persistence data
    * into memory and optionally sync versions
    */
-  void setPersistenceHelper(
-    std::unique_ptr<CachePersistence<K, V>> persistence,
-    bool syncVersion) noexcept;
+  void setPersistenceHelper(bool syncVersion) noexcept;
 
   /**
    * Load the contents of the persistence passed to constructor in to the
@@ -227,7 +196,8 @@ class LRUPersistentCache
    *
    * @returns the in memory cache's new version
    */
-  CacheDataVersion load(CachePersistence<K, V>& persistence) noexcept;
+  folly::Optional<CacheDataVersion> load(
+      CachePersistence<K, V>& persistence) noexcept;
 
   /**
    * The syncer thread's function. Syncs to the persistence, if necessary,
@@ -252,6 +222,12 @@ class LRUPersistentCache
    */
   std::shared_ptr<CachePersistence<K, V>> getPersistence();
 
+  /**
+   * Block the caller thread until persistence has been loaded into the
+   * in-memory cache. Return cache_ after persistence loading is done.
+   */
+  LRUInMemoryCache<K, V, MutexT>& blockingAccessInMemCache();
+
  private:
   // Our threadsafe in memory cache
   LRUInMemoryCache<K, V, MutexT> cache_;
@@ -275,9 +251,6 @@ class LRUPersistentCache
   int nSyncTries_{0};
   std::chrono::steady_clock::time_point lastExecutorScheduleTime_;
 
-  // Whether or not to do 1 sync before destruction.
-  bool syncOnDestroy_{false};
-
   // persistence layer
   // we use a shared pointer since the syncer thread might be operating on
   // it when the client decides to set a new one
@@ -290,6 +263,12 @@ class LRUPersistentCache
 
   // executor for periodic sync.
   std::shared_ptr<folly::Executor> executor_;
+
+  // Semaphore to synchronize persistence loading and operations on the cache.
+  folly::SaturatingSemaphore<true /* MayBlock */> persistenceLoadedSemaphore_;
+
+  // Whether the persistence will be loaded inline.
+  const bool inlinePersistenceLoading_;
 };
 
 }

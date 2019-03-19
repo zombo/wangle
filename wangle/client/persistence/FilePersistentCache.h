@@ -37,23 +37,9 @@ namespace wangle {
  * true support arbitrary types is written.
  */
 template<typename K, typename V, typename M = std::mutex>
-class FilePersistentCache : public PersistentCache<K, V>,
-                            private boost::noncopyable {
+class FilePersistentCache : public PersistentCache<K, V> {
  public:
-  FilePersistentCache(
-      const std::string& file,
-      std::size_t cacheCapacity,
-      std::chrono::seconds syncInterval =
-          std::chrono::duration_cast<std::chrono::seconds>(
-              client::persistence::DEFAULT_CACHE_SYNC_INTERVAL),
-      int nSyncRetries = client::persistence::DEFAULT_CACHE_SYNC_RETRIES);
-
-  FilePersistentCache(
-      std::shared_ptr<folly::Executor> executor,
-      const std::string& file,
-      std::size_t cacheCapacity,
-      std::chrono::seconds syncInterval,
-      int nSyncRetries);
+  FilePersistentCache(const std::string& file, PersistentCacheConfig config);
 
   ~FilePersistentCache() override {}
 
@@ -80,9 +66,9 @@ class FilePersistentCache : public PersistentCache<K, V>,
     return cache_->size();
   }
 
-  void setSyncOnDestroy(bool syncOnDestroy) {
-    cache_->setSyncOnDestroy(syncOnDestroy);
-  }
+ private:
+  FilePersistentCache(const FilePersistentCache&) = delete;
+  FilePersistentCache& operator=(const FilePersistentCache&) = delete;
 
  private:
   typename LRUPersistentCache<K, V, M>::Ptr cache_;

@@ -96,11 +96,6 @@ class Acceptor :
    */
   virtual void resetSSLContextConfigs();
 
-  /**
-   * Dynamically add a new SSLContextConfig
-   */
-  void addSSLContextConfig(const SSLContextConfig& sslCtxConfig);
-
   SSLContextManager* getSSLContextManager() const {
     return sslCtxManager_.get();
   }
@@ -366,18 +361,17 @@ class Acceptor :
       folly::EventBase* base,
       int fd) {
     return folly::AsyncSocket::UniquePtr(
-        new folly::AsyncSocket(base, fd));
+        new folly::AsyncSocket(base, folly::NetworkSocket::fromFd(fd)));
   }
 
   virtual folly::AsyncSSLSocket::UniquePtr makeNewAsyncSSLSocket(
     const std::shared_ptr<folly::SSLContext>& ctx, folly::EventBase* base, int fd) {
-    return folly::AsyncSSLSocket::UniquePtr(
-        new folly::AsyncSSLSocket(
-          ctx,
-          base,
-          fd,
-          true, /* set server */
-          true /* defer the security negotiation until sslAccept */));
+    return folly::AsyncSSLSocket::UniquePtr(new folly::AsyncSSLSocket(
+        ctx,
+        base,
+        folly::NetworkSocket::fromFd(fd),
+        true, /* set server */
+        true /* defer the security negotiation until sslAccept */));
   }
 
  protected:
@@ -411,13 +405,16 @@ class Acceptor :
 
   // Helper function to initialize downstreamConnectionManager_
   virtual void initDownstreamConnectionManager(folly::EventBase* eventBase);
+  std::string getPskContext();
   virtual DefaultToFizzPeekingCallback* getFizzPeeker() {
     return &defaultFizzPeeker_;
   }
   virtual std::shared_ptr<fizz::server::FizzServerContext> createFizzContext();
-  virtual std::shared_ptr<fizz::server::TicketCipher>
-  createFizzTicketCipher(folly::Optional<std::string> = folly::none);
-  void updateFizzContext(fizz::server::FizzServerContext*);
+  virtual std::shared_ptr<fizz::server::TicketCipher> createFizzTicketCipher(
+    const TLSTicketKeySeeds& seeds,
+    folly::Optional<std::string> pskContext = folly::none);
+
+  virtual std::unique_ptr<fizz::server::CertManager> createFizzCertManager();
 
   /**
    * Socket options to apply to the client socket
@@ -438,7 +435,8 @@ class Acceptor :
   wangle::ConnectionManager::UniquePtr downstreamConnectionManager_;
 
   std::shared_ptr<SSLCacheProvider> cacheProvider_;
-  wangle::TLSTicketKeySeeds currentSecrets_;
+  std::shared_ptr<fizz::server::TicketCipher> fizzTicketCipher_{nullptr};
+  std::shared_ptr<fizz::server::CertManager> fizzCertManager_{nullptr};
 
  private:
 
@@ -457,6 +455,8 @@ class Acceptor :
   std::shared_ptr<const LoadShedConfiguration> loadShedConfig_{nullptr};
   const IConnectionCounter* connectionCounter_{nullptr};
   std::chrono::milliseconds gracefulShutdownTimeout_{5000};
+
+  std::shared_ptr<const fizz::server::FizzServerContext> recreateFizzContext();
 };
 
 class AcceptorFactory {

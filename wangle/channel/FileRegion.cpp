@@ -54,9 +54,13 @@ AsyncSocket::WriteResult FileRegion::FileWriteRequest::performWrite() {
   }
 
   int flags = SPLICE_F_NONBLOCK | SPLICE_F_MORE;
-  ssize_t spliced = ::splice(pipe_out_, nullptr,
-                             socket_->getFd(), nullptr,
-                             bytesInPipe_, flags);
+  ssize_t spliced = ::splice(
+      pipe_out_,
+      nullptr,
+      socket_->getNetworkSocket().toFd(),
+      nullptr,
+      bytesInPipe_,
+      flags);
   if (spliced == -1) {
     if (errno == EAGAIN) {
       return AsyncSocket::WriteResult(0);
@@ -166,7 +170,7 @@ FileRegion::FileWriteRequest::FileReadHandler::FileReadHandler(
     FileWriteRequest* req, int pipe_in, size_t bytesToRead)
   : req_(req), pipe_in_(pipe_in), bytesToRead_(bytesToRead) {
   CHECK(req_->readBase_->isInEventBaseThread());
-  initHandler(req_->readBase_, pipe_in);
+  initHandler(req_->readBase_, folly::NetworkSocket::fromFd(pipe_in));
   if (!registerHandler(EventFlags::WRITE | EventFlags::PERSIST)) {
     req_->fail(__func__, AsyncSocketException(
         AsyncSocketException::INTERNAL_ERROR,

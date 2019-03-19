@@ -113,26 +113,11 @@ void FilePersistenceLayer<K, V>::clear() {
 template <typename K, typename V, typename M>
 FilePersistentCache<K, V, M>::FilePersistentCache(
     const std::string& file,
-    std::size_t cacheCapacity,
-    std::chrono::seconds syncInterval,
-    int nSyncRetries)
+    PersistentCacheConfig config)
     : cache_(std::make_shared<LRUPersistentCache<K, V, M>>(
-          cacheCapacity,
-          std::chrono::duration_cast<std::chrono::milliseconds>(syncInterval),
-          nSyncRetries,
-          std::make_unique<FilePersistenceLayer<K, V>>(file))) {}
+          std::move(config),
+          std::make_unique<FilePersistenceLayer<K, V>>(file))) {
+  cache_->init();
+}
 
-template <typename K, typename V, typename M>
-FilePersistentCache<K, V, M>::FilePersistentCache(
-    std::shared_ptr<folly::Executor> executor,
-    const std::string& file,
-    std::size_t cacheCapacity,
-    std::chrono::seconds syncInterval,
-    int nSyncRetries)
-    : cache_(std::make_shared<LRUPersistentCache<K, V, M>>(
-          std::move(executor),
-          cacheCapacity,
-          std::chrono::duration_cast<std::chrono::milliseconds>(syncInterval),
-          nSyncRetries,
-          std::make_unique<FilePersistenceLayer<K, V>>(file))) {}
 } // namespace wangle
